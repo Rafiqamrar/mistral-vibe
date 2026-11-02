@@ -1,0 +1,215 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Context Compaction in Mistral Vibe</title>
+<style>
+  :root {
+    --bg: #fafaf7; --fg: #1d1d1b; --muted: #6b6b66; --card: #ffffff;
+    --line: #e3e2dc; --accent: #d9480f; --code-bg: #f0efe9; --ok: #2b8a3e; --warn: #c92a2a;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #161614; --fg: #ececE6; --muted: #9a9a92; --card: #1f1f1c;
+      --line: #33332e; --accent: #ff8a4c; --code-bg: #262622; --ok: #69db7c; --warn: #ff8787;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--fg);
+    font: 16px/1.6 system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  main { max-width: 860px; margin: 0 auto; padding: 32px 16px 80px; }
+  h1 { font-size: 2rem; margin: 0 0 4px; }
+  h2 { margin-top: 48px; padding-top: 8px; border-top: 1px solid var(--line); }
+  h3 { margin-top: 28px; }
+  .lead { color: var(--muted); font-size: 1.1rem; margin-top: 0; }
+  code { background: var(--code-bg); padding: 1px 5px; border-radius: 4px; font-size: .9em; }
+  pre {
+    background: var(--code-bg); padding: 14px 16px; border-radius: 8px;
+    overflow-x: auto; font-size: .85rem; line-height: 1.5;
+  }
+  pre code { background: none; padding: 0; }
+  nav { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 12px 20px; margin: 24px 0; }
+  nav ol { margin: 0; padding-left: 20px; columns: 2; }
+  a { color: var(--accent); }
+  .steps { list-style: none; padding: 0; counter-reset: step; }
+  .steps li {
+    counter-increment: step; background: var(--card); border: 1px solid var(--line);
+    border-radius: 8px; padding: 14px 16px 14px 56px; margin: 10px 0; position: relative;
+  }
+  .steps li::before {
+    content: counter(step); position: absolute; left: 14px; top: 12px;
+    width: 28px; height: 28px; border-radius: 50%; background: var(--accent); color: #fff;
+    display: grid; place-items: center; font-weight: 700;
+  }
+  .steps strong { display: block; }
+  .note { border-left: 4px solid var(--accent); background: var(--card); padding: 10px 16px; border-radius: 0 8px 8px 0; margin: 16px 0; }
+  table { width: 100%; border-collapse: collapse; background: var(--card); border: 1px solid var(--line); border-radius: 8px; overflow: hidden; font-size: .93rem; }
+  th, td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { background: var(--code-bg); }
+  tr:last-child td { border-bottom: none; }
+  .table-wrap { overflow-x: auto; }
+  .flow { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 16px 0; }
+  .flow span { background: var(--card); border: 1px solid var(--line); border-radius: 6px; padding: 6px 10px; font-size: .9rem; }
+  .flow .arrow { border: none; background: none; color: var(--muted); padding: 0; }
+  .flow .hot { border-color: var(--accent); }
+  .ok { color: var(--ok); } .bad { color: var(--warn); }
+  footer { margin-top: 56px; color: var(--muted); font-size: .85rem; }
+</style>
+</head>
+<body>
+<main>
+
+<h1>Context Compaction</h1>
+<p class="lead">How Mistral Vibe keeps long conversations inside the model's context window by replacing old history with a summary.</p>
+
+<nav>
+  <strong>Contents</strong>
+  <ol>
+    <li><a href="#why">Why compaction exists</a></li>
+    <li><a href="#trigger">When it runs</a></li>
+    <li><a href="#pipeline">The compaction pipeline</a></li>
+    <li><a href="#envelope">The envelope message</a></li>
+    <li><a href="#after">What the model sees afterwards</a></li>
+    <li><a href="#failures">Failure handling</a></li>
+    <li><a href="#helpers">Helper functions</a></li>
+    <li><a href="#config">Configuration</a></li>
+    <li><a href="#files">Where to find the code</a></li>
+  </ol>
+</nav>
+
+<h2 id="why">1. Why compaction exists</h2>
+<p>Every turn, the agent sends the whole conversation to the model: system prompt, user messages, assistant replies and tool results. Tool results can be large (file contents, command output), so the history grows quickly. Once it reaches the model's context limit, requests fail.</p>
+<p>Compaction fixes this. The agent asks a model to write a <em>handoff summary</em> of the work so far. It then appends one message containing that summary, and from then on the model only sees the system prompt plus that message and everything after it.</p>
+
+<h2 id="trigger">2. When it runs</h2>
+<h3>Automatic trigger</h3>
+<p><code>AutoCompactMiddleware.before_turn</code> (<code>vibe/core/middleware.py</code>) runs before every turn. It compares the last known <code>stats.context_tokens</code> with the active model's <code>auto_compact_threshold</code>:</p>
+<pre><code>if threshold &gt; 0 and context.stats.context_tokens &gt;= threshold:
+    return MiddlewareResult(action=MiddlewareAction.COMPACT)</code></pre>
+<p>The agent loop handles that action in <code>_run_compaction</code> (<code>vibe/core/agent_loop/_loop.py</code>). It emits a <code>CompactStartEvent</code>, calls <code>compact()</code>, sends an <code>auto_compact_triggered</code> telemetry event with the status (<code>success</code>, <code>failure</code> or <code>cancelled</code>) and reports the result.</p>
+
+<h3>How the threshold is chosen</h3>
+<div class="table-wrap"><table>
+  <tr><th>Model declares</th><th>Threshold used</th></tr>
+  <tr><td>Its own <code>auto_compact_threshold</code></td><td>That value</td></tr>
+  <tr><td>A context window only</td><td>80% of the window (<code>AUTO_COMPACT_WINDOW_RATIO = 0.8</code>). Compaction is itself a model call that carries the conversation, so triggering at the true ceiling would fail exactly when it is needed.</td></tr>
+  <tr><td>Neither</td><td>The global <code>auto_compact_threshold</code> setting (default <code>200_000</code> tokens)</td></tr>
+  <tr><td>Threshold set to <code>0</code></td><td>Auto-compaction is disabled</td></tr>
+</table></div>
+
+<h3>Early warning</h3>
+<p><code>ContextWarningMiddleware</code> injects a one-time message when usage reaches 50% of the threshold: <em>"You have used N% of your context budget (x/y tokens before older messages are summarized)"</em>. The percentage is relative to the compaction point, not the model's full window, so a user who deliberately capped the conversation is not told they have capacity they gave up.</p>
+
+<h2 id="pipeline">3. The compaction pipeline</h2>
+<div class="flow">
+  <span>messages</span><span class="arrow">→</span>
+  <span>select_model_context</span><span class="arrow">→</span>
+  <span>collect_prior_user_messages</span><span class="arrow">→</span>
+  <span class="hot">model call → &lt;summary&gt;</span><span class="arrow">→</span>
+  <span>render envelope</span><span class="arrow">→</span>
+  <span class="hot">append boundary + save</span>
+</div>
+
+<ol class="steps">
+  <li><strong>Snapshot the visible context</strong>
+    <code>select_model_context</code> finds the latest compaction boundary and returns the system messages plus everything from that boundary onward. On a first compaction there is no boundary, so it returns everything.</li>
+  <li><strong>Pick user messages to keep</strong>
+    <code>collect_prior_user_messages</code> walks the user messages newest-first within a budget of <code>COMPACT_USER_MESSAGE_MAX_TOKENS</code> (20,000). The message that overflows the budget is middle-truncated. System-injected messages and old summaries are skipped. Messages kept by an earlier compaction are parsed back out of the old envelope and merged with newer real user turns, so they survive repeated compactions.</li>
+  <li><strong>Ask a model for a summary</strong>
+    The compaction prompt (<code>vibe/core/prompts/compact.md</code>) asks for a handoff summary: the user's goal and constraints, key decisions, files touched with one-line status, the concrete next step, and any identifiers needed. The model must wrap its answer in <code>&lt;summary&gt;…&lt;/summary&gt;</code>, which <code>extract_summary</code> pulls out. Extra user instructions can be appended under "Additional Instructions".</li>
+  <li><strong>Build the envelope</strong>
+    <code>render_compaction_context</code> combines the kept user messages and the summary into a single message (see below).</li>
+  <li><strong>Append and save</strong>
+    The envelope is appended as an injected user message tagged <code>context_boundary="compaction"</code>. <code>context_tokens</code> is reset to 0 because the true size is unknown without an API call; the next LLM turn recomputes it from real usage. Then the session is saved.</li>
+</ol>
+
+<div class="note"><strong>Atomicity.</strong> Summarization runs on a local copy of the messages. The live <code>MessageList</code> is only changed in the last step, by appending the boundary. A failure therefore never leaves a half-trimmed conversation.</div>
+
+<h3>Prompt-cache friendly by design</h3>
+<p>The first (primary) call appends the summary request to the live conversation, so the provider can reuse its cached prefix and the call is cheap. It uses the same tools and tool choice as the session, which keeps that prefix identical.</p>
+
+<h2 id="envelope">4. The envelope message</h2>
+<pre><code>You are continuing a trajectory after a context compaction.
+
+Here are some of the most recent previous user messages, preserved
+verbatim where possible. Treat them as prior context, not as new requests.
+
+&lt;previous_user_messages&gt;
+&lt;previous_user_message&gt;
+...first kept message...
+&lt;/previous_user_message&gt;
+&lt;previous_user_message&gt;
+...second kept message...
+&lt;/previous_user_message&gt;
+&lt;/previous_user_messages&gt;
+
+Here is a summary of what has happened so far:
+
+&lt;compaction_summary&gt;
+...the model's summary...
+&lt;/compaction_summary&gt;</code></pre>
+<p>Reserved tags that appear inside a user's own text are HTML-escaped (<code>_escape_reserved_previous_user_message_tags</code>), so user content cannot forge or break the envelope. <code>parse_previous_user_messages</code> reverses the format when the next compaction needs the old messages.</p>
+
+<h2 id="after">5. What the model sees afterwards</h2>
+<pre><code>Before compaction                    After compaction
+─────────────────                    ─────────────────
+system prompt                        system prompt
+user 1                               [ENVELOPE: kept user msgs + summary]
+assistant 1 + tool results           user 12
+user 2                               assistant 12 …
+…                                    (new turns continue here)
+user 11
+assistant 11</code></pre>
+<p>The old messages are not deleted from the stored session. They stay in the history, but <code>select_model_context</code> hides everything before the latest boundary when building a request.</p>
+
+<h2 id="failures">6. Failure handling</h2>
+<div class="table-wrap"><table>
+  <tr><th>Situation</th><th>What happens</th></tr>
+  <tr><td>The summary request itself is too long for the model (<code>ContextTooLongError</code>)</td><td><code>drop_oldest_round</code> removes the oldest round (user message, assistant replies, tool results) and retries, up to 3 times. It stops early if only the latest round remains.</td></tr>
+  <tr><td>The primary call returns tool calls (<code>tool_call</code>) or has no <code>&lt;summary&gt;</code> block (<code>empty_summary</code>)</td><td>Unless <code>raise_on_compaction_failure</code> is set, a <strong>fallback</strong> runs: a dedicated system prompt, thinking turned off, no tools, and the conversation rendered as a text transcript. This deliberately breaks the prompt cache, because a reliable summary is worth more.</td></tr>
+  <tr><td>The fallback also fails</td><td>A <code>compaction_failed</code> telemetry event is sent with the <em>primary</em> failure reason. The placeholder <code>(no summary available)</code> is used so the session can continue.</td></tr>
+  <tr><td><code>raise_on_compaction_failure = true</code></td><td>No fallback. <code>CompactionFailedError</code> is raised with the reason.</td></tr>
+</table></div>
+<p>The fallback transcript (<code>_render_transcript</code>) keeps user text, assistant text and tool calls such as <code>[calls read_file({...})]</code>, so the summarizer sees what produced each tool result. It drops system messages and reasoning content: reasoning is ephemeral and would bloat the very transcript compaction is trying to shrink.</p>
+
+<h2 id="helpers">7. Helper functions</h2>
+<div class="table-wrap"><table>
+  <tr><th>Function</th><th>Purpose</th></tr>
+  <tr><td><code>extract_summary</code></td><td>Returns the text inside <code>&lt;summary&gt;</code> or <code>None</code> if absent or empty.</td></tr>
+  <tr><td><code>select_model_context</code></td><td>Keeps system messages plus everything from the latest compaction boundary.</td></tr>
+  <tr><td><code>collect_prior_user_messages</code></td><td>Chooses which user messages survive, within the token budget.</td></tr>
+  <tr><td><code>drop_oldest_round</code></td><td>Removes the oldest user round to recover from an overlong summary request.</td></tr>
+  <tr><td><code>render_compaction_context</code></td><td>Builds the envelope text.</td></tr>
+  <tr><td><code>parse_previous_user_messages</code></td><td>Reads kept user messages back out of an envelope.</td></tr>
+  <tr><td><code>reorder_for_tool_adjacency</code></td><td>Providers such as Anthropic require each assistant <code>tool_use</code> to be followed immediately by its <code>tool_result</code>. A message steered into a running turn can land in that gap; this moves it to just after the results. It is pure and order-stable, so it is safe to run on every outbound request.</td></tr>
+  <tr><td><code>render_teleport_summary_request</code></td><td>Builds a summary request used when teleporting a session to Vibe Code Web, with a character limit.</td></tr>
+</table></div>
+
+<h2 id="config">8. Configuration</h2>
+<div class="table-wrap"><table>
+  <tr><th>Setting</th><th>Default</th><th>Effect</th></tr>
+  <tr><td><code>auto_compact_threshold</code></td><td>200,000 tokens</td><td>Trigger point for models that declare neither a threshold nor a context window. <code>0</code> disables auto-compaction.</td></tr>
+  <tr><td><code>compaction_model</code></td><td>active model</td><td>Model used for summaries. It is only used if it shares the active provider.</td></tr>
+  <tr><td><code>compaction_prompt_id</code></td><td><code>compact</code></td><td>Which prompt drives the summary.</td></tr>
+  <tr><td><code>raise_on_compaction_failure</code></td><td><code>false</code></td><td>Raise instead of falling back or using a placeholder.</td></tr>
+</table></div>
+
+<h2 id="files">9. Where to find the code</h2>
+<div class="table-wrap"><table>
+  <tr><th>File</th><th>Contents</th></tr>
+  <tr><td><code>vibe/core/compaction/manager.py</code></td><td><code>CompactionManager</code>, primary and fallback summary calls, retries, errors</td></tr>
+  <tr><td><code>vibe/core/compaction/context.py</code></td><td>Envelope rendering and parsing, message selection, tool-adjacency reordering</td></tr>
+  <tr><td><code>vibe/core/middleware.py</code></td><td><code>AutoCompactMiddleware</code>, <code>ContextWarningMiddleware</code></td></tr>
+  <tr><td><code>vibe/core/agent_loop/_loop.py</code></td><td><code>_run_compaction</code>: events and telemetry around <code>compact()</code></td></tr>
+  <tr><td><code>vibe/core/config/_defaults.py</code></td><td>Default threshold and window ratio</td></tr>
+  <tr><td><code>vibe/core/prompts/compact.md</code>, <code>compact_system.md</code></td><td>Summary prompt and the fallback system prompt</td></tr>
+  <tr><td><code>tests/core/compaction/</code></td><td>Tests for the manager and context helpers</td></tr>
+</table></div>
+
+<footer>See also the shorter Markdown version: <code>docs/compaction.md</code>.</footer>
+</main>
+</body>
+</html>
