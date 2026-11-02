@@ -7,8 +7,23 @@ Source: `vibe/core/compaction/` (`manager.py`, `context.py`) and `AutoCompactMid
 ## When it runs
 
 - **Automatically.** `AutoCompactMiddleware.before_turn` compares `stats.context_tokens` with the active model's `auto_compact_threshold`. If the threshold is positive and reached, it returns `MiddlewareAction.COMPACT`.
-- **Threshold resolution.** A model's own threshold wins. Otherwise a model that declares a context window compacts at a fixed ratio of that window. Otherwise the global `auto_compact_threshold` setting applies. A value `<= 0` disables auto-compaction.
-- **Warning.** `ContextWarningMiddleware` injects a one-time warning at 50% of the threshold so the user knows compaction is approaching.
+- **Reactively.** If the provider rejects a turn as too long (`ContextTooLongError`), the loop compacts and retries the turn. This happens at most once per turn and never when `raise_on_compaction_failure` is set.
+- **Manually.** The `/compact` command runs it on demand, with optional instructions to guide the summary.
+
+### Threshold resolution
+
+The first rule that applies wins:
+
+1. The model's own `auto_compact_threshold`, if it is below the model's window or the window is unknown.
+2. The global `auto_compact_threshold`, if it is set and below the window or the window is unknown.
+3. 80% of the model's context window (`AUTO_COMPACT_WINDOW_RATIO`).
+4. `DEFAULT_AUTO_COMPACT_THRESHOLD` (200,000 tokens).
+
+A threshold at or above the window is ignored. A threshold of `0` turns off the automatic trigger only: reactive and manual compaction still work.
+
+### Optional warning
+
+`ContextWarningMiddleware` is only added when `context_warnings` is on, and it is off by default. It warns at 50% of the threshold, then stays quiet until the middleware is reset, for example by a compaction.
 
 ## What `CompactionManager.compact()` does
 
@@ -17,7 +32,7 @@ Source: `vibe/core/compaction/` (`manager.py`, `context.py`) and `AutoCompactMid
 3. **Summarize.** The compaction prompt (`compaction_prompt_id`) is sent to the compaction model (`get_compaction_model()`). The model must answer with `<summary>...</summary>`, which `extract_summary` pulls out.
 4. **Append a boundary.** The result is a single injected user message, tagged `context_boundary="compaction"`, containing the preserved user messages and the summary. `context_tokens` is reset to 0 and the session is saved. The next LLM turn recomputes the real size from API usage.
 
-The live message list is only touched in step 4. All summarization runs on a local copy, so a failure never leaves a half-trimmed conversation.
+The manager only changes the live message list in step 4. All summarization runs on a local copy, so a failure never leaves a half-trimmed conversation. Just before the manager runs, the agent loop may add missing tool responses (`_clean_message_history`). After it returns, the loop resets the middleware and marks the session title for a refresh.
 
 ### The envelope
 
@@ -45,7 +60,7 @@ Each model call goes through the injected `complete` callable, so usage is alway
 |---|---|
 | Context too long for the summary call | `drop_oldest_round` removes the oldest user round (with its assistant and tool messages) and retries, up to 3 times. |
 | Primary call returns tool calls (`tool_call`) or no `<summary>` (`empty_summary`) | Unless `raise_on_compaction_failure` is set, a fallback runs: a fresh compaction system prompt, thinking off, no tools, and the conversation rendered as a plain-text transcript. This deliberately breaks the prompt cache for a more reliable summary. |
-| Fallback also fails | A `compaction_failed` telemetry event is sent with the primary's reason. The placeholder summary `(no summary available)` is used. |
+| Fallback also fails | A `vibe.compaction_failed` telemetry event is sent with the primary's reason. The placeholder summary `(no summary available)` is used. |
 | `raise_on_compaction_failure = true` | No fallback. `CompactionFailedError` is raised. |
 
 The primary call is cache-friendly: the summary request is appended to the live conversation's token prefix, so the provider's prompt cache can be reused.
@@ -59,7 +74,8 @@ The primary call is cache-friendly: the summary request is appended to the live 
 
 | Setting | Purpose |
 |---|---|
-| `auto_compact_threshold` | Token count that triggers compaction for models with no threshold or window of their own. |
+| `auto_compact_threshold` | Global threshold, used when a model has no valid threshold of its own and the value is below the model's window. `0` turns off the automatic trigger. |
+| `context_warnings` | Adds the warning at 50% of the threshold. Defaults to `false`. |
 | `compaction_model` | Optional model for summaries. It is used only if it shares the active provider. |
 | `compaction_prompt_id` | Which prompt drives the summary. |
 | `raise_on_compaction_failure` | Fail loudly instead of falling back. Defaults to `false`. |

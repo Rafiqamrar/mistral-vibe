@@ -213,9 +213,9 @@
   <h1>Context <span>Compaction</span></h1>
   <p class="lead">How Mistral Vibe keeps long conversations inside the model's context window by swapping old history for a short handoff summary.</p>
   <div class="stats">
-    <div class="stat"><b>200k</b><span>default threshold (tokens)</span></div>
-    <div class="stat"><b>80%</b><span>of the window when known</span></div>
-    <div class="stat"><b>20k</b><span>tokens of user messages kept</span></div>
+    <div class="stat"><b>200k</b><span>fallback threshold (tokens)</span></div>
+    <div class="stat"><b>80%</b><span>of the window if no threshold is set</span></div>
+    <div class="stat"><b>20k</b><span>max tokens of user messages kept</span></div>
     <div class="stat"><b>3</b><span>retries on overflow</span></div>
   </div>
 </header>
@@ -228,7 +228,13 @@
 
 <section id="trigger" class="reveal">
   <h2><span class="num">02</span>When it runs</h2>
-  <p><code>AutoCompactMiddleware.before_turn</code> runs before every turn and compares the last known <code>context_tokens</code> with the active model's threshold. Try it:</p>
+  <p>Compaction can start in three ways:</p>
+  <ul>
+    <li><strong>Automatic:</strong> <code>AutoCompactMiddleware.before_turn</code> runs before every turn and compares the last known <code>context_tokens</code> with the active model's threshold.</li>
+    <li><strong>Reactive:</strong> if the provider rejects a turn as too long (<code>ContextTooLongError</code>), the loop compacts and retries the turn. This happens at most once per turn and never when <code>raise_on_compaction_failure</code> is set.</li>
+    <li><strong>Manual:</strong> the <code>/compact</code> command, with optional instructions to guide the summary.</li>
+  </ul>
+  <p>Try the automatic trigger:</p>
 
   <div class="card">
     <div class="sim-top">
@@ -244,29 +250,32 @@
     </div>
     <div class="meter" id="meter">
       <div class="fill" id="fill"></div>
-      <div class="marker" id="warnMark"><em>50% warning</em></div>
+      <div class="marker" id="warnMark"><em>50% (optional)</em></div>
       <div class="marker thr" id="thrMark"><em id="thrLabel">threshold</em></div>
       <div class="tokens" id="tokLabel">0</div>
     </div>
     <input type="range" id="tokens" min="0" max="260000" step="1000" value="60000" aria-label="Context tokens">
     <div class="status" id="status"><span class="dot"></span><span id="statusText"></span></div>
+    <p style="color:var(--muted);font-size:.85rem;margin-bottom:0">Illustration only. The 8,000 tokens after "Run compaction" is an example value: the code sets <code>context_tokens</code> to 0, and the next model call measures the real size.</p>
   </div>
 
   <h3>How the threshold is chosen</h3>
+  <p>The first rule that applies wins:</p>
   <div class="table-wrap"><table>
-    <thead><tr><th>Model declares</th><th>Threshold used</th></tr></thead>
+    <thead><tr><th>#</th><th>Rule</th><th>Threshold used</th></tr></thead>
     <tbody>
-    <tr><td>Its own <code>auto_compact_threshold</code></td><td>That value</td></tr>
-    <tr><td>A context window only</td><td>80% of the window (<code>AUTO_COMPACT_WINDOW_RATIO = 0.8</code>). Compaction is itself a model call carrying the conversation, so triggering at the true ceiling would fail exactly when it is needed.</td></tr>
-    <tr><td>Neither</td><td>Global <code>auto_compact_threshold</code> (default <code>200_000</code>)</td></tr>
-    <tr><td>Set to <code>0</code></td><td>Auto-compaction disabled</td></tr>
+    <tr><td>1</td><td>The model sets its own <code>auto_compact_threshold</code>, below its window (or its window is unknown)</td><td>That value</td></tr>
+    <tr><td>2</td><td>The global <code>auto_compact_threshold</code> is set, below the window (or the window is unknown)</td><td>The global value</td></tr>
+    <tr><td>3</td><td>The model declares a context window</td><td>80% of the window (<code>AUTO_COMPACT_WINDOW_RATIO = 0.8</code>). Compaction is itself a model call carrying the conversation, so triggering at the true ceiling would fail exactly when it is needed.</td></tr>
+    <tr><td>4</td><td>None of the above</td><td><code>DEFAULT_AUTO_COMPACT_THRESHOLD</code> (<code>200_000</code>)</td></tr>
     </tbody>
   </table></div>
+  <p>A threshold at or above the window is ignored, because the provider would reject the request before compaction could run. A threshold of <code>0</code> turns off the automatic trigger only: reactive and manual compaction still work.</p>
 
   <div class="code"><button class="icon copy">Copy</button><pre><code><span class="k">if</span> threshold &gt; 0 <span class="k">and</span> context.stats.context_tokens &gt;= threshold:
     <span class="k">return</span> MiddlewareResult(action=MiddlewareAction.COMPACT)</code></pre></div>
-  <p>The agent loop handles <code>COMPACT</code> in <code>_run_compaction</code>: it emits a <code>CompactStartEvent</code>, calls <code>compact()</code>, and sends an <code>auto_compact_triggered</code> telemetry event with status <code>success</code>, <code>failure</code> or <code>cancelled</code>.</p>
-  <div class="callout blue"><code>ContextWarningMiddleware</code> injects a one-time warning at 50% of the threshold. The percentage is relative to the compaction point, not the full window, so a user who deliberately capped the conversation is not told they have capacity they gave up.</div>
+  <p>The agent loop handles <code>COMPACT</code> in <code>_run_compaction</code>: it emits a <code>CompactStartEvent</code>, calls <code>compact()</code>, sends a <code>vibe.auto_compact_triggered</code> telemetry event with status <code>success</code>, <code>failure</code> or <code>cancelled</code>, then emits a <code>CompactEndEvent</code>.</p>
+  <div class="callout blue"><strong>Optional warning.</strong> <code>ContextWarningMiddleware</code> is only added when <code>context_warnings</code> is on, and it is off by default. It warns at 50% of the threshold, then stays quiet until the middleware is reset, for example by a compaction. The percentage is relative to the compaction point, not the full window, so a user who deliberately capped the conversation is not told they have capacity they gave up.</div>
 </section>
 
 <section id="pipeline" class="reveal">
@@ -274,8 +283,8 @@
   <p>Click a step to see what it does.</p>
   <div class="pipe" id="pipe"></div>
   <div class="card panel" id="pipePanel"></div>
-  <div class="callout"><strong>Atomic by design.</strong> Summarization runs on a local copy. The live <code>MessageList</code> only changes in step 5, by appending the boundary, so a failure never leaves a half-trimmed conversation.</div>
-  <p><strong>Cache friendly:</strong> the primary call appends the summary request to the live conversation with the same tools and tool choice, so the provider's cached prefix is reused and the call is cheap.</p>
+  <div class="callout"><strong>Atomic by design.</strong> Summarization runs on a local copy. The manager only changes the live <code>MessageList</code> in step 5, by appending the boundary, so a failure never leaves a half-trimmed conversation. Just before the manager runs, the agent loop may add missing tool responses (<code>_clean_message_history</code>).</div>
+  <p><strong>Cache friendly:</strong> the primary call appends the summary request to the live conversation with the same tools and tool choice, so the provider can reuse its cached prefix.</p>
 </section>
 
 <section id="envelope" class="reveal">
@@ -287,9 +296,9 @@ Here are some of the most recent previous user messages, preserved
 verbatim where possible. Treat them as prior context, not as new requests.
 
 <span class="k">&lt;previous_user_messages&gt;</span>
-  <span class="k">&lt;previous_user_message&gt;</span>
-  ...first kept message...
-  <span class="k">&lt;/previous_user_message&gt;</span>
+<span class="k">&lt;previous_user_message&gt;</span>
+...first kept message...
+<span class="k">&lt;/previous_user_message&gt;</span>
 <span class="k">&lt;/previous_user_messages&gt;</span>
 
 Here is a summary of what has happened so far:
@@ -351,7 +360,8 @@ Here is a summary of what has happened so far:
   <div class="table-wrap"><table>
     <thead><tr><th>Setting</th><th>Default</th><th>Effect</th></tr></thead>
     <tbody>
-    <tr><td><code>auto_compact_threshold</code></td><td>200,000</td><td>Trigger for models with no threshold or window of their own. <code>0</code> disables.</td></tr>
+    <tr><td><code>auto_compact_threshold</code></td><td>unset</td><td>Global threshold, used when a model has no valid threshold of its own and the value is below the model's window. If unset, the 80% and 200,000 rules apply. <code>0</code> turns off the automatic trigger.</td></tr>
+    <tr><td><code>context_warnings</code></td><td><code>false</code></td><td>Adds the warning at 50% of the threshold.</td></tr>
     <tr><td><code>compaction_model</code></td><td>active model</td><td>Model for summaries; used only if it shares the active provider.</td></tr>
     <tr><td><code>compaction_prompt_id</code></td><td><code>compact</code></td><td>Which prompt drives the summary.</td></tr>
     <tr><td><code>raise_on_compaction_failure</code></td><td><code>false</code></td><td>Raise instead of falling back or using a placeholder.</td></tr>
@@ -443,7 +453,7 @@ Here is a summary of what has happened so far:
     if (thr <= 0) {
       warn.style.display = mark.style.display = "none";
       dot.style.background = "var(--muted)";
-      text.textContent = "Auto-compaction is disabled. The context grows until the provider rejects the request.";
+      text.textContent = "The automatic trigger is off. If the provider rejects a turn as too long, the loop still compacts and retries, unless raise_on_compaction_failure is set.";
       return;
     }
     warn.style.display = mark.style.display = "";
@@ -455,7 +465,7 @@ Here is a summary of what has happened so far:
       text.textContent = "Threshold reached. The next turn starts with a compaction (action COMPACT).";
     } else if (tokens >= thr * 0.5) {
       fill.classList.add("warn"); dot.style.background = "var(--warn)";
-      text.textContent = "Past 50%. A one-time context warning is injected: " + Math.round(tokens / thr * 100) + "% of the budget used.";
+      text.textContent = "Past 50% (" + Math.round(tokens / thr * 100) + "% of the budget used). A warning is injected only if context_warnings is on.";
     } else {
       dot.style.background = "var(--ok)";
       text.textContent = "Plenty of room. Nothing happens yet.";
@@ -483,7 +493,7 @@ Here is a summary of what has happened so far:
     ["Keep users", "<h3>2. Pick user messages to keep</h3><p><code>collect_prior_user_messages</code> walks user messages newest-first within <code>COMPACT_USER_MESSAGE_MAX_TOKENS</code> (20,000). The message that overflows is middle-truncated. System-injected messages and old summaries are skipped. Messages kept by an earlier compaction are parsed back out of the old envelope and merged with newer real turns.</p>"],
     ["Summarize", "<h3>3. Ask a model for a summary</h3><p>The prompt in <code>vibe/core/prompts/compact.md</code> asks for a handoff: the goal and constraints, key decisions, files touched with one-line status, the concrete next step, and identifiers the next model needs. The answer must be wrapped in <code>&lt;summary&gt;</code>; <code>extract_summary</code> pulls it out. Extra user instructions are appended under <em>Additional Instructions</em>.</p>"],
     ["Envelope", "<h3>4. Build the envelope</h3><p><code>render_compaction_context</code> combines the kept user messages and the summary into one message. Reserved tags in user text are escaped.</p>"],
-    ["Append + save", "<h3>5. Append and save</h3><p>The envelope is appended as an injected user message with <code>context_boundary=\"compaction\"</code>. <code>context_tokens</code> is reset to 0, because the true size is unknown without an API call; the next LLM turn recomputes it from real usage. Then the session is saved.</p>"]
+    ["Append + save", "<h3>5. Append and save</h3><p>The envelope is appended as an injected user message with <code>context_boundary=\"compaction\"</code>. <code>context_tokens</code> is reset to 0, because the true size is unknown without an API call; the next LLM turn recomputes it from real usage. Then the session is saved. Back in the loop, the middleware is reset and the session title is marked for a refresh.</p>"]
   ];
   var pipe = $("#pipe"), panel = $("#pipePanel");
   function pick(i) {
@@ -509,13 +519,13 @@ Here is a summary of what has happened so far:
   var A = '<span class="arr">→</span>';
   var fails = [
     ["Context too long", "<p>The summary request itself can overflow the model (<code>ContextTooLongError</code>).</p><div class=\"flow\">" +
-      N("bad", "ContextTooLongError") + A + N("hot", "drop_oldest_round") + A + N("", "retry (max 3)") + A + N("good", "summary") + "</div><p>A round is a run of user messages plus the assistant replies and tool results they triggered. If only the latest round remains, the error is re-raised.</p>"],
+      N("bad", "ContextTooLongError") + A + N("hot", "drop_oldest_round") + A + N("", "retry (max 3)") + A + N("good", "summary") + "</div><p>A round is a run of user messages plus the assistant replies and tool results they triggered. If only the latest round remains or the retries run out, the error is re-raised.</p>"],
     ["Tool call / no summary", "<p>The primary call returned tool calls (<code>tool_call</code>) or no <code>&lt;summary&gt;</code> block (<code>empty_summary</code>).</p><div class=\"flow\">" +
       N("bad", "primary failed") + A + N("hot", "fallback call") + A + N("good", "summary") + "</div><p>The fallback uses a dedicated system prompt, thinking off, no tools, and the conversation as a text transcript. It deliberately breaks the prompt cache: a reliable summary is worth it.</p>"],
     ["Fallback fails too", "<p>Both attempts produced nothing usable.</p><div class=\"flow\">" +
-      N("bad", "primary failed") + A + N("bad", "fallback failed") + A + N("hot", "compaction_failed telemetry") + A + N("", "(no summary available)") + "</div><p>The telemetry event carries the <em>primary</em> reason, which is the informative one. The placeholder lets the session continue.</p>"],
+      N("bad", "primary failed") + A + N("bad", "fallback failed") + A + N("hot", "vibe.compaction_failed telemetry") + A + N("", "(no summary available)") + "</div><p>The telemetry event carries the <em>primary</em> reason, which is the informative one. The placeholder lets the session continue.</p>"],
     ["Strict mode", "<p><code>raise_on_compaction_failure = true</code></p><div class=\"flow\">" +
-      N("bad", "primary failed") + A + N("hot", "telemetry") + A + N("bad", "CompactionFailedError(reason)") + "</div><p>No fallback and no placeholder: the error propagates and the loop reports a failed compaction.</p>"]
+      N("bad", "primary failed") + A + N("hot", "telemetry") + A + N("bad", "CompactionFailedError(reason)") + "</div><p>No fallback and no placeholder: the error propagates and the loop reports a failed compaction. Reactive compaction is off in this mode too.</p>"]
   ];
   var ft = $("#ftabs"), fp = $("#fpanel");
   function pickF(i) {
