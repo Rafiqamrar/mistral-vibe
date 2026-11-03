@@ -1,0 +1,545 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Context Compaction in Mistral Vibe</title>
+<style>
+  :root {
+    --bg: #fbfaf7; --bg2: #f3f1ea; --card: #ffffff; --fg: #1c1b19; --muted: #6a675f;
+    --line: #e4e1d7; --accent: #ff6a1a; --accent2: #ffb000; --accent-soft: rgba(255,106,26,.12);
+    --code-bg: #f1efe8; --ok: #1f9d55; --warn: #e8a100; --bad: #e03e3e; --blue: #3b6fe0;
+    --shadow: 0 1px 2px rgba(0,0,0,.05), 0 8px 24px rgba(0,0,0,.06);
+    --grad: linear-gradient(135deg, #ff6a1a 0%, #ffb000 100%);
+  }
+  :root[data-theme="dark"] {
+    --bg: #12110f; --bg2: #1a1815; --card: #1d1b18; --fg: #f1efe8; --muted: #a09c90;
+    --line: #2e2b26; --accent: #ff8a3d; --accent2: #ffc233; --accent-soft: rgba(255,138,61,.14);
+    --code-bg: #25221e; --ok: #4cd080; --warn: #ffc233; --bad: #ff7676; --blue: #7ea2ff;
+    --shadow: 0 1px 2px rgba(0,0,0,.4), 0 8px 24px rgba(0,0,0,.35);
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; scroll-padding-top: 24px; }
+  body {
+    margin: 0; background: var(--bg); color: var(--fg);
+    font: 16px/1.65 "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
+    transition: background .3s, color .3s;
+  }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  code, pre { font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace; }
+  code { background: var(--code-bg); padding: 1px 6px; border-radius: 5px; font-size: .86em; }
+
+  /* ---------- layout ---------- */
+  .layout { display: grid; grid-template-columns: 260px minmax(0, 1fr); max-width: 1180px; margin: 0 auto; }
+  aside {
+    position: sticky; top: 0; align-self: start; height: 100vh; padding: 28px 20px;
+    border-right: 1px solid var(--line); display: flex; flex-direction: column; gap: 18px; overflow-y: auto;
+  }
+  .brand { display: flex; align-items: center; gap: 10px; font-weight: 700; letter-spacing: -.01em; }
+  .brand i { width: 26px; height: 26px; border-radius: 8px; background: var(--grad); display: block; }
+  aside nav { display: flex; flex-direction: column; gap: 2px; }
+  aside nav a {
+    color: var(--muted); padding: 7px 12px; border-radius: 8px; font-size: .92rem;
+    border-left: 3px solid transparent; transition: all .15s;
+  }
+  aside nav a:hover { background: var(--bg2); color: var(--fg); text-decoration: none; }
+  aside nav a.active { background: var(--accent-soft); color: var(--accent); border-left-color: var(--accent); font-weight: 600; }
+  .progress { height: 4px; background: var(--line); border-radius: 4px; overflow: hidden; }
+  .progress b { display: block; height: 100%; width: 0; background: var(--grad); transition: width .1s; }
+  .side-foot { margin-top: auto; display: flex; gap: 8px; align-items: center; justify-content: space-between; font-size: .8rem; color: var(--muted); }
+  button.icon {
+    background: var(--card); color: var(--fg); border: 1px solid var(--line); border-radius: 8px;
+    padding: 6px 10px; cursor: pointer; font: inherit; font-size: .85rem;
+  }
+  button.icon:hover { border-color: var(--accent); }
+  main { padding: 0 40px 100px; min-width: 0; }
+
+  /* ---------- hero ---------- */
+  .hero { padding: 64px 0 28px; position: relative; }
+  .hero::before {
+    content: ""; position: absolute; inset: 0 -40px auto -40px; height: 360px; z-index: -1;
+    background: radial-gradient(600px 220px at 20% 0%, var(--accent-soft), transparent 70%),
+                radial-gradient(500px 200px at 85% 20%, rgba(255,176,0,.12), transparent 70%);
+  }
+  .tag { display: inline-block; font-size: .78rem; font-weight: 600; letter-spacing: .06em; text-transform: uppercase;
+         color: var(--accent); background: var(--accent-soft); padding: 4px 10px; border-radius: 999px; }
+  h1 { font-size: clamp(2.2rem, 5vw, 3.4rem); line-height: 1.08; margin: 14px 0 12px; letter-spacing: -.03em; }
+  h1 span { background: var(--grad); -webkit-background-clip: text; background-clip: text; color: transparent; }
+  .lead { color: var(--muted); font-size: 1.15rem; max-width: 640px; margin: 0; }
+  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin-top: 28px; }
+  .stat { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 14px 16px; box-shadow: var(--shadow); }
+  .stat b { display: block; font-size: 1.7rem; letter-spacing: -.02em; background: var(--grad); -webkit-background-clip: text; background-clip: text; color: transparent; }
+  .stat span { color: var(--muted); font-size: .85rem; }
+
+  /* ---------- sections ---------- */
+  section { padding-top: 56px; }
+  h2 { font-size: 1.65rem; letter-spacing: -.02em; margin: 0 0 6px; display: flex; align-items: center; gap: 12px; }
+  h2 .num { font-size: .8rem; background: var(--grad); color: #fff; border-radius: 8px; padding: 3px 9px; font-weight: 700; }
+  h3 { margin: 28px 0 8px; font-size: 1.1rem; }
+  p { margin: 10px 0; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 16px; padding: 22px; box-shadow: var(--shadow); margin: 18px 0; }
+  .callout { border-left: 4px solid var(--accent); background: var(--accent-soft); padding: 12px 16px; border-radius: 0 12px 12px 0; margin: 18px 0; }
+  .callout.blue { border-color: var(--blue); background: rgba(59,111,224,.1); }
+
+  /* code */
+  .code { position: relative; margin: 14px 0; }
+  .code pre { background: var(--code-bg); border: 1px solid var(--line); border-radius: 12px; padding: 16px; margin: 0;
+              overflow-x: auto; font-size: .82rem; line-height: 1.6; }
+  .code pre code { background: none; padding: 0; font-size: inherit; }
+  .copy { position: absolute; top: 8px; right: 8px; opacity: 0; transition: opacity .15s; }
+  .code:hover .copy, .copy:focus { opacity: 1; }
+  .k { color: var(--accent); } .c { color: var(--muted); } .s { color: var(--ok); }
+
+  /* tables */
+  .table-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 14px; background: var(--card); margin: 14px 0; }
+  table { width: 100%; border-collapse: collapse; font-size: .92rem; }
+  th, td { text-align: left; padding: 11px 14px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { background: var(--bg2); font-size: .78rem; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); }
+  tr:last-child td { border-bottom: 0; }
+  tbody tr:hover td { background: var(--accent-soft); }
+
+  /* ---------- simulator ---------- */
+  .sim-top { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; justify-content: space-between; }
+  select, input[type=range] { font: inherit; }
+  select { background: var(--bg2); color: var(--fg); border: 1px solid var(--line); border-radius: 8px; padding: 7px 10px; }
+  .meter { position: relative; height: 44px; background: var(--bg2); border: 1px solid var(--line); border-radius: 12px; margin: 44px 0 26px; }
+  .meter .fill { position: absolute; inset: 0 auto 0 0; width: 0; border-radius: 11px; background: var(--ok); transition: background .3s; }
+  .meter .fill.warn { background: var(--warn); } .meter .fill.hot { background: var(--bad); }
+  .marker { position: absolute; top: -30px; bottom: -8px; width: 0; border-left: 2px dashed var(--muted); transition: left .3s; }
+  .marker em { position: absolute; top: -2px; left: 6px; font-style: normal; font-size: .72rem; color: var(--muted); white-space: nowrap; }
+  .marker.thr { border-color: var(--bad); } .marker.thr em { color: var(--bad); font-weight: 600; }
+  .tokens { position: absolute; inset: 0; display: grid; place-items: center; font-weight: 700; font-size: .95rem; mix-blend-mode: normal; }
+  input[type=range] { width: 100%; accent-color: var(--accent); }
+  .status { display: flex; gap: 10px; align-items: center; padding: 12px 16px; border-radius: 12px; background: var(--bg2); border: 1px solid var(--line); margin-top: 14px; font-weight: 500; }
+  .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--ok); flex: none; }
+  .btn { background: var(--grad); color: #fff; border: 0; border-radius: 10px; padding: 9px 16px; font: inherit; font-weight: 600; cursor: pointer; box-shadow: 0 4px 14px rgba(255,106,26,.35); transition: transform .15s; }
+  .btn:hover { transform: translateY(-1px); } .btn:disabled { opacity: .5; cursor: default; transform: none; }
+  .btn.ghost { background: var(--card); color: var(--fg); border: 1px solid var(--line); box-shadow: none; }
+
+  /* ---------- before/after ---------- */
+  .stack { display: flex; flex-wrap: wrap; gap: 8px; min-height: 52px; align-items: center; margin: 14px 0; }
+  .chip { padding: 8px 12px; border-radius: 10px; font-size: .8rem; font-weight: 600; border: 1px solid var(--line); background: var(--bg2);
+          transition: all .55s ease; max-width: 200px; overflow: hidden; white-space: nowrap; }
+  .chip.sys { background: rgba(59,111,224,.14); border-color: var(--blue); color: var(--blue); }
+  .chip.user { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
+  .chip.tool { background: var(--code-bg); color: var(--muted); }
+  .chip.env { background: var(--grad); color: #fff; border: 0; max-width: 0; padding: 8px 0; opacity: 0; }
+  .stack.done .chip.old { max-width: 0; padding: 8px 0; opacity: 0; border-width: 0; margin: 0 -4px; }
+  .stack.done .chip.env { max-width: 340px; padding: 8px 14px; opacity: 1; }
+  .stack .chip.new { display: none; }
+  .stack.done .chip.new { display: inline-block; animation: pop .5s .6s both; }
+  @keyframes pop { from { opacity: 0; transform: scale(.8); } to { opacity: 1; transform: none; } }
+  .legend { display: flex; flex-wrap: wrap; gap: 14px; font-size: .8rem; color: var(--muted); }
+  .legend i { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 5px; }
+
+  /* ---------- pipeline ---------- */
+  .pipe { display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px; position: relative; margin: 20px 0 8px; }
+  .pipe button {
+    background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 14px 8px 12px; cursor: pointer; color: var(--fg);
+    font: inherit; font-size: .82rem; text-align: center; transition: all .2s; position: relative;
+  }
+  .pipe button b { display: grid; place-items: center; width: 34px; height: 34px; margin: 0 auto 8px; border-radius: 50%;
+                   background: var(--bg2); border: 2px solid var(--line); font-size: .95rem; transition: all .2s; }
+  .pipe button:hover { transform: translateY(-2px); border-color: var(--accent); }
+  .pipe button.on { border-color: var(--accent); background: var(--accent-soft); box-shadow: var(--shadow); }
+  .pipe button.on b { background: var(--grad); color: #fff; border-color: transparent; }
+  .pipe button:not(:last-child)::after { content: "›"; position: absolute; right: -11px; top: 22px; color: var(--muted); font-size: 1.3rem; z-index: 1; }
+  .panel { animation: fade .3s; }
+  @keyframes fade { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+
+  /* ---------- tabs (failure) ---------- */
+  .tabs { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 16px; }
+  .tabs button { background: var(--bg2); border: 1px solid var(--line); color: var(--muted); border-radius: 999px; padding: 7px 14px; cursor: pointer; font: inherit; font-size: .85rem; }
+  .tabs button.on { background: var(--grad); color: #fff; border-color: transparent; font-weight: 600; }
+  .flow { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 14px 0; }
+  .node { padding: 8px 12px; border-radius: 10px; background: var(--bg2); border: 1px solid var(--line); font-size: .84rem; }
+  .node.good { border-color: var(--ok); color: var(--ok); } .node.bad { border-color: var(--bad); color: var(--bad); }
+  .node.hot { border-color: var(--accent); color: var(--accent); }
+  .arr { color: var(--muted); }
+
+  /* ---------- config / files ---------- */
+  .grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 14px; }
+  .mini { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 16px; transition: all .2s; }
+  .mini:hover { transform: translateY(-3px); box-shadow: var(--shadow); border-color: var(--accent); }
+  .mini h4 { margin: 0 0 4px; font-size: .95rem; } .mini p { margin: 4px 0 0; color: var(--muted); font-size: .88rem; }
+
+  .reveal { opacity: 0; transform: translateY(18px); transition: opacity .6s, transform .6s; }
+  .reveal.in { opacity: 1; transform: none; }
+  @media (prefers-reduced-motion: reduce) {
+    .reveal { opacity: 1; transform: none; transition: none; } * { animation: none !important; transition: none !important; } html { scroll-behavior: auto; }
+  }
+  footer { margin-top: 70px; padding-top: 20px; border-top: 1px solid var(--line); color: var(--muted); font-size: .85rem; }
+
+  /* ---------- mobile ---------- */
+  @media (max-width: 860px) {
+    .layout { grid-template-columns: 1fr; }
+    aside { position: sticky; top: 0; z-index: 10; height: auto; flex-direction: row; align-items: center; padding: 10px 16px;
+            border-right: 0; border-bottom: 1px solid var(--line); background: var(--bg); gap: 10px; }
+    aside .brand span, .progress, .side-foot span { display: none; }
+    aside nav { flex-direction: row; overflow-x: auto; flex: 1; }
+    aside nav a { white-space: nowrap; border-left: 0; }
+    .side-foot { margin: 0; }
+    main { padding: 0 16px 80px; }
+    .pipe { grid-template-columns: 1fr; } .pipe button:not(:last-child)::after { display: none; }
+    .pipe button { display: flex; align-items: center; gap: 12px; text-align: left; } .pipe button b { margin: 0; }
+  }
+</style>
+</head>
+<body>
+<div class="layout">
+
+<aside>
+  <div class="brand"><i></i><span>Vibe Docs</span></div>
+  <div class="progress"><b id="bar"></b></div>
+  <nav id="toc">
+    <a href="#why">Why</a>
+    <a href="#trigger">Trigger</a>
+    <a href="#pipeline">Pipeline</a>
+    <a href="#envelope">Envelope</a>
+    <a href="#after">Before / after</a>
+    <a href="#failures">Failures</a>
+    <a href="#helpers">Helpers</a>
+    <a href="#config">Config</a>
+    <a href="#files">Code map</a>
+  </nav>
+  <div class="side-foot"><span>Theme</span><button class="icon" id="theme" aria-label="Toggle theme">◐</button></div>
+</aside>
+
+<main>
+
+<header class="hero">
+  <span class="tag">Architecture</span>
+  <h1>Context <span>Compaction</span></h1>
+  <p class="lead">How Mistral Vibe keeps long conversations inside the model's context window by swapping old history for a short handoff summary.</p>
+  <div class="stats">
+    <div class="stat"><b>200k</b><span>fallback threshold (tokens)</span></div>
+    <div class="stat"><b>80%</b><span>of the window if no threshold is set</span></div>
+    <div class="stat"><b>20k</b><span>max tokens of user messages kept</span></div>
+    <div class="stat"><b>3</b><span>retries on overflow</span></div>
+  </div>
+</header>
+
+<section id="why" class="reveal">
+  <h2><span class="num">01</span>Why compaction exists</h2>
+  <p>Every turn, the agent sends the whole conversation to the model: system prompt, user messages, assistant replies and tool results. Tool results can be huge (file contents, command output), so the history grows fast. At the model's context limit, requests fail.</p>
+  <div class="callout"><strong>The idea:</strong> ask a model to write a <em>handoff summary</em>, append it as one message, and from then on show the model only the system prompt plus that message and whatever comes next.</div>
+</section>
+
+<section id="trigger" class="reveal">
+  <h2><span class="num">02</span>When it runs</h2>
+  <p>Compaction can start in three ways:</p>
+  <ul>
+    <li><strong>Automatic:</strong> <code>AutoCompactMiddleware.before_turn</code> runs before every turn and compares the last known <code>context_tokens</code> with the active model's threshold.</li>
+    <li><strong>Reactive:</strong> if the provider rejects a turn as too long (<code>ContextTooLongError</code>), the loop compacts and retries the turn. This happens at most once per turn and never when <code>raise_on_compaction_failure</code> is set.</li>
+    <li><strong>Manual:</strong> the <code>/compact</code> command, with optional instructions to guide the summary.</li>
+  </ul>
+  <p>Try the automatic trigger:</p>
+
+  <div class="card">
+    <div class="sim-top">
+      <label>Model type&nbsp;
+        <select id="preset">
+          <option value="102400">Declares a 128k window → 80% = 102,400</option>
+          <option value="204800">Declares a 256k window → 80% = 204,800</option>
+          <option value="200000" selected>No window, default → 200,000</option>
+          <option value="0">Threshold set to 0 → disabled</option>
+        </select>
+      </label>
+      <button class="btn" id="runCompact">Run compaction</button>
+    </div>
+    <div class="meter" id="meter">
+      <div class="fill" id="fill"></div>
+      <div class="marker" id="warnMark"><em>50% (optional)</em></div>
+      <div class="marker thr" id="thrMark"><em id="thrLabel">threshold</em></div>
+      <div class="tokens" id="tokLabel">0</div>
+    </div>
+    <input type="range" id="tokens" min="0" max="260000" step="1000" value="60000" aria-label="Context tokens">
+    <div class="status" id="status"><span class="dot"></span><span id="statusText"></span></div>
+    <p style="color:var(--muted);font-size:.85rem;margin-bottom:0">Illustration only. The 8,000 tokens after "Run compaction" is an example value: the code sets <code>context_tokens</code> to 0, and the next model call measures the real size.</p>
+  </div>
+
+  <h3>How the threshold is chosen</h3>
+  <p>The first rule that applies wins:</p>
+  <div class="table-wrap"><table>
+    <thead><tr><th>#</th><th>Rule</th><th>Threshold used</th></tr></thead>
+    <tbody>
+    <tr><td>1</td><td>The model sets its own <code>auto_compact_threshold</code>, below its window (or its window is unknown)</td><td>That value</td></tr>
+    <tr><td>2</td><td>The global <code>auto_compact_threshold</code> is set, below the window (or the window is unknown)</td><td>The global value</td></tr>
+    <tr><td>3</td><td>The model declares a context window</td><td>80% of the window (<code>AUTO_COMPACT_WINDOW_RATIO = 0.8</code>). Compaction is itself a model call carrying the conversation, so triggering at the true ceiling would fail exactly when it is needed.</td></tr>
+    <tr><td>4</td><td>None of the above</td><td><code>DEFAULT_AUTO_COMPACT_THRESHOLD</code> (<code>200_000</code>)</td></tr>
+    </tbody>
+  </table></div>
+  <p>A threshold at or above the window is ignored, because the provider would reject the request before compaction could run. A threshold of <code>0</code> turns off the automatic trigger only: reactive and manual compaction still work.</p>
+
+  <div class="code"><button class="icon copy">Copy</button><pre><code><span class="k">if</span> threshold &gt; 0 <span class="k">and</span> context.stats.context_tokens &gt;= threshold:
+    <span class="k">return</span> MiddlewareResult(action=MiddlewareAction.COMPACT)</code></pre></div>
+  <p>The agent loop handles <code>COMPACT</code> in <code>_run_compaction</code>: it emits a <code>CompactStartEvent</code>, calls <code>compact()</code>, sends a <code>vibe.auto_compact_triggered</code> telemetry event with status <code>success</code>, <code>failure</code> or <code>cancelled</code>, then emits a <code>CompactEndEvent</code>.</p>
+  <div class="callout blue"><strong>Optional warning.</strong> <code>ContextWarningMiddleware</code> is only added when <code>context_warnings</code> is on, and it is off by default. It warns at 50% of the threshold, then stays quiet until the middleware is reset, for example by a compaction. The percentage is relative to the compaction point, not the full window, so a user who deliberately capped the conversation is not told they have capacity they gave up.</div>
+</section>
+
+<section id="pipeline" class="reveal">
+  <h2><span class="num">03</span>The pipeline</h2>
+  <p>Click a step to see what it does.</p>
+  <div class="pipe" id="pipe"></div>
+  <div class="card panel" id="pipePanel"></div>
+  <div class="callout"><strong>Atomic by design.</strong> Summarization runs on a local copy. The manager only changes the live <code>MessageList</code> in step 5, by appending the boundary, so a failure never leaves a half-trimmed conversation. Just before the manager runs, the agent loop may add missing tool responses (<code>_clean_message_history</code>).</div>
+  <p><strong>Cache friendly:</strong> the primary call appends the summary request to the live conversation with the same tools and tool choice, so the provider can reuse its cached prefix.</p>
+</section>
+
+<section id="envelope" class="reveal">
+  <h2><span class="num">04</span>The envelope message</h2>
+  <p>One injected user message tagged <code>context_boundary="compaction"</code>:</p>
+  <div class="code"><button class="icon copy">Copy</button><pre><code>You are continuing a trajectory after a context compaction.
+
+Here are some of the most recent previous user messages, preserved
+verbatim where possible. Treat them as prior context, not as new requests.
+
+<span class="k">&lt;previous_user_messages&gt;</span>
+<span class="k">&lt;previous_user_message&gt;</span>
+...first kept message...
+<span class="k">&lt;/previous_user_message&gt;</span>
+<span class="k">&lt;/previous_user_messages&gt;</span>
+
+Here is a summary of what has happened so far:
+
+<span class="s">&lt;compaction_summary&gt;</span>
+...the model's summary...
+<span class="s">&lt;/compaction_summary&gt;</span></code></pre></div>
+  <p>Reserved tags inside a user's own text are HTML-escaped, so user content cannot forge or break the envelope. <code>parse_previous_user_messages</code> reverses the format so kept messages survive repeated compactions.</p>
+</section>
+
+<section id="after" class="reveal">
+  <h2><span class="num">05</span>Before and after</h2>
+  <p>What the model sees in each request. The old messages stay in the stored session; <code>select_model_context</code> just hides everything before the latest boundary.</p>
+  <div class="card">
+    <div class="legend">
+      <span><i style="background:var(--blue)"></i>system</span>
+      <span><i style="background:var(--accent)"></i>user</span>
+      <span><i style="background:var(--muted)"></i>assistant / tool</span>
+      <span><i style="background:var(--accent2)"></i>envelope</span>
+    </div>
+    <div class="stack" id="stack">
+      <span class="chip sys">system prompt</span>
+      <span class="chip user old">user 1</span><span class="chip tool old">assistant 1</span><span class="chip tool old">tool result 1</span>
+      <span class="chip user old">user 2</span><span class="chip tool old">assistant 2</span><span class="chip tool old">tool result 2</span>
+      <span class="chip user old">user 3</span><span class="chip tool old">assistant 3</span>
+      <span class="chip env">envelope: kept users + summary</span>
+      <span class="chip user new">user 4</span><span class="chip tool new">assistant 4</span>
+    </div>
+    <button class="btn" id="demoRun">Compact</button>
+    <button class="btn ghost" id="demoReset">Reset</button>
+  </div>
+</section>
+
+<section id="failures" class="reveal">
+  <h2><span class="num">06</span>Failure handling</h2>
+  <div class="card">
+    <div class="tabs" id="ftabs"></div>
+    <div class="panel" id="fpanel"></div>
+  </div>
+  <p>The fallback transcript keeps user text, assistant text and tool calls such as <code>[calls read_file({...})]</code>, so the summarizer sees what produced each tool result. It drops system messages and reasoning, which is ephemeral and would bloat the transcript compaction is trying to shrink.</p>
+</section>
+
+<section id="helpers" class="reveal">
+  <h2><span class="num">07</span>Helper functions</h2>
+  <div class="grid2">
+    <div class="mini"><h4><code>extract_summary</code></h4><p>Returns the text inside <code>&lt;summary&gt;</code>, or <code>None</code> if absent or empty.</p></div>
+    <div class="mini"><h4><code>select_model_context</code></h4><p>System messages plus everything from the latest compaction boundary.</p></div>
+    <div class="mini"><h4><code>collect_prior_user_messages</code></h4><p>Chooses which user messages survive, newest first, within 20k tokens.</p></div>
+    <div class="mini"><h4><code>drop_oldest_round</code></h4><p>Removes the oldest user round to recover from an overlong summary request.</p></div>
+    <div class="mini"><h4><code>render_compaction_context</code></h4><p>Builds the envelope text.</p></div>
+    <div class="mini"><h4><code>parse_previous_user_messages</code></h4><p>Reads kept user messages back out of an envelope.</p></div>
+    <div class="mini"><h4><code>reorder_for_tool_adjacency</code></h4><p>Providers like Anthropic need each <code>tool_use</code> immediately followed by its <code>tool_result</code>. Moves any message that landed in the gap. Pure and order-stable, safe on every request.</p></div>
+    <div class="mini"><h4><code>render_teleport_summary_request</code></h4><p>Summary request for teleporting a session to Vibe Code Web, with a character cap.</p></div>
+  </div>
+</section>
+
+<section id="config" class="reveal">
+  <h2><span class="num">08</span>Configuration</h2>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Setting</th><th>Default</th><th>Effect</th></tr></thead>
+    <tbody>
+    <tr><td><code>auto_compact_threshold</code></td><td>unset</td><td>Global threshold, used when a model has no valid threshold of its own and the value is below the model's window. If unset, the 80% and 200,000 rules apply. <code>0</code> turns off the automatic trigger.</td></tr>
+    <tr><td><code>context_warnings</code></td><td><code>false</code></td><td>Adds the warning at 50% of the threshold.</td></tr>
+    <tr><td><code>compaction_model</code></td><td>active model</td><td>Model for summaries; used only if it shares the active provider.</td></tr>
+    <tr><td><code>compaction_prompt_id</code></td><td><code>compact</code></td><td>Which prompt drives the summary.</td></tr>
+    <tr><td><code>raise_on_compaction_failure</code></td><td><code>false</code></td><td>Raise instead of falling back or using a placeholder.</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<section id="files" class="reveal">
+  <h2><span class="num">09</span>Code map</h2>
+  <div class="table-wrap"><table>
+    <thead><tr><th>File</th><th>Contents</th></tr></thead>
+    <tbody>
+    <tr><td><code>vibe/core/compaction/manager.py</code></td><td><code>CompactionManager</code>, primary and fallback calls, retries, errors</td></tr>
+    <tr><td><code>vibe/core/compaction/context.py</code></td><td>Envelope render and parse, message selection, tool-adjacency reordering</td></tr>
+    <tr><td><code>vibe/core/middleware.py</code></td><td><code>AutoCompactMiddleware</code>, <code>ContextWarningMiddleware</code></td></tr>
+    <tr><td><code>vibe/core/agent_loop/_loop.py</code></td><td><code>_run_compaction</code>: events and telemetry</td></tr>
+    <tr><td><code>vibe/core/config/_defaults.py</code></td><td>Default threshold and window ratio</td></tr>
+    <tr><td><code>vibe/core/prompts/compact.md</code>, <code>compact_system.md</code></td><td>Summary prompt and fallback system prompt</td></tr>
+    <tr><td><code>tests/core/compaction/</code></td><td>Manager and context tests</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<footer>Shorter Markdown version: <code>docs/compaction.md</code></footer>
+</main>
+</div>
+
+<script>
+(function () {
+  var $ = function (s) { return document.querySelector(s); };
+  var fmt = function (n) { return n.toLocaleString("en-US"); };
+
+  /* theme */
+  var root = document.documentElement;
+  try { var saved = localStorage.getItem("vibe-docs-theme"); if (saved) root.setAttribute("data-theme", saved); } catch (e) {}
+  if (!root.getAttribute("data-theme") && window.matchMedia && matchMedia("(prefers-color-scheme: dark)").matches) root.setAttribute("data-theme", "dark");
+  $("#theme").addEventListener("click", function () {
+    var next = root.getAttribute("data-theme") === "dark" ? "light" : "dark";
+    root.setAttribute("data-theme", next);
+    try { localStorage.setItem("vibe-docs-theme", next); } catch (e) {}
+  });
+
+  /* copy buttons */
+  document.querySelectorAll(".copy").forEach(function (b) {
+    b.addEventListener("click", function () {
+      var text = b.parentNode.querySelector("pre").innerText;
+      var done = function () { b.textContent = "Copied"; setTimeout(function () { b.textContent = "Copy"; }, 1200); };
+      if (navigator.clipboard) navigator.clipboard.writeText(text).then(done, function () {});
+    });
+  });
+
+  /* reading progress + scrollspy + reveal */
+  var bar = $("#bar");
+  addEventListener("scroll", function () {
+    var h = document.documentElement;
+    bar.style.width = (h.scrollTop / Math.max(1, h.scrollHeight - h.clientHeight) * 100) + "%";
+  }, { passive: true });
+  var links = {};
+  document.querySelectorAll("#toc a").forEach(function (a) { links[a.getAttribute("href").slice(1)] = a; });
+  if ("IntersectionObserver" in window) {
+    var spy = new IntersectionObserver(function (entries) {
+      entries.forEach(function (e) {
+        if (e.isIntersecting) {
+          Object.keys(links).forEach(function (k) { links[k].classList.remove("active"); });
+          links[e.target.id].classList.add("active");
+        }
+      });
+    }, { rootMargin: "-20% 0px -70% 0px" });
+    var rev = new IntersectionObserver(function (entries) {
+      entries.forEach(function (e) { if (e.isIntersecting) { e.target.classList.add("in"); rev.unobserve(e.target); } });
+    }, { threshold: 0.08 });
+    document.querySelectorAll("section").forEach(function (s) { spy.observe(s); rev.observe(s); });
+  } else {
+    document.querySelectorAll(".reveal").forEach(function (s) { s.classList.add("in"); });
+  }
+
+  /* threshold simulator */
+  var MAX = 260000;
+  var slider = $("#tokens"), preset = $("#preset");
+  function render() {
+    var tokens = +slider.value, thr = +preset.value;
+    $("#tokLabel").textContent = fmt(tokens) + " tokens";
+    var pct = tokens / MAX * 100;
+    var fill = $("#fill");
+    fill.style.width = pct + "%";
+    fill.className = "fill";
+    var warn = $("#warnMark"), mark = $("#thrMark");
+    var dot = $("#status .dot"), text = $("#statusText");
+    if (thr <= 0) {
+      warn.style.display = mark.style.display = "none";
+      dot.style.background = "var(--muted)";
+      text.textContent = "The automatic trigger is off. If the provider rejects a turn as too long, the loop still compacts and retries, unless raise_on_compaction_failure is set.";
+      return;
+    }
+    warn.style.display = mark.style.display = "";
+    warn.style.left = (thr * 0.5 / MAX * 100) + "%";
+    mark.style.left = (thr / MAX * 100) + "%";
+    $("#thrLabel").textContent = "threshold " + fmt(thr);
+    if (tokens >= thr) {
+      fill.classList.add("hot"); dot.style.background = "var(--bad)";
+      text.textContent = "Threshold reached. The next turn starts with a compaction (action COMPACT).";
+    } else if (tokens >= thr * 0.5) {
+      fill.classList.add("warn"); dot.style.background = "var(--warn)";
+      text.textContent = "Past 50% (" + Math.round(tokens / thr * 100) + "% of the budget used). A warning is injected only if context_warnings is on.";
+    } else {
+      dot.style.background = "var(--ok)";
+      text.textContent = "Plenty of room. Nothing happens yet.";
+    }
+  }
+  slider.addEventListener("input", render);
+  preset.addEventListener("change", render);
+  $("#runCompact").addEventListener("click", function () {
+    var btn = this, from = +slider.value, to = 8000, t0 = null;
+    if (from <= to) return;
+    btn.disabled = true;
+    (function step(ts) {
+      if (t0 === null) t0 = ts;
+      var p = Math.min(1, (ts - t0) / 900);
+      slider.value = Math.round(from + (to - from) * (1 - Math.pow(1 - p, 3)));
+      render();
+      if (p < 1) requestAnimationFrame(step); else btn.disabled = false;
+    })(performance.now());
+  });
+  render();
+
+  /* pipeline */
+  var steps = [
+    ["Snapshot", "<h3>1. Snapshot the visible context</h3><p><code>select_model_context</code> finds the latest compaction boundary and returns the system messages plus everything from that boundary onward. On a first compaction there is no boundary, so it returns everything.</p>"],
+    ["Keep users", "<h3>2. Pick user messages to keep</h3><p><code>collect_prior_user_messages</code> walks user messages newest-first within <code>COMPACT_USER_MESSAGE_MAX_TOKENS</code> (20,000). The message that overflows is middle-truncated. System-injected messages and old summaries are skipped. Messages kept by an earlier compaction are parsed back out of the old envelope and merged with newer real turns.</p>"],
+    ["Summarize", "<h3>3. Ask a model for a summary</h3><p>The prompt in <code>vibe/core/prompts/compact.md</code> asks for a handoff: the goal and constraints, key decisions, files touched with one-line status, the concrete next step, and identifiers the next model needs. The answer must be wrapped in <code>&lt;summary&gt;</code>; <code>extract_summary</code> pulls it out. Extra user instructions are appended under <em>Additional Instructions</em>.</p>"],
+    ["Envelope", "<h3>4. Build the envelope</h3><p><code>render_compaction_context</code> combines the kept user messages and the summary into one message. Reserved tags in user text are escaped.</p>"],
+    ["Append + save", "<h3>5. Append and save</h3><p>The envelope is appended as an injected user message with <code>context_boundary=\"compaction\"</code>. <code>context_tokens</code> is reset to 0, because the true size is unknown without an API call; the next LLM turn recomputes it from real usage. Then the session is saved. Back in the loop, the middleware is reset and the session title is marked for a refresh.</p>"]
+  ];
+  var pipe = $("#pipe"), panel = $("#pipePanel");
+  function pick(i) {
+    pipe.querySelectorAll("button").forEach(function (b, j) { b.classList.toggle("on", i === j); });
+    panel.innerHTML = steps[i][1];
+    panel.classList.remove("panel"); void panel.offsetWidth; panel.classList.add("panel");
+  }
+  steps.forEach(function (s, i) {
+    var b = document.createElement("button");
+    b.innerHTML = "<b>" + (i + 1) + "</b>" + s[0];
+    b.addEventListener("click", function () { pick(i); });
+    pipe.appendChild(b);
+  });
+  pick(0);
+
+  /* before / after */
+  var stack = $("#stack");
+  $("#demoRun").addEventListener("click", function () { stack.classList.add("done"); });
+  $("#demoReset").addEventListener("click", function () { stack.classList.remove("done"); });
+
+  /* failure tabs */
+  var N = function (cls, t) { return '<span class="node ' + cls + '">' + t + "</span>"; };
+  var A = '<span class="arr">→</span>';
+  var fails = [
+    ["Context too long", "<p>The summary request itself can overflow the model (<code>ContextTooLongError</code>).</p><div class=\"flow\">" +
+      N("bad", "ContextTooLongError") + A + N("hot", "drop_oldest_round") + A + N("", "retry (max 3)") + A + N("good", "summary") + "</div><p>A round is a run of user messages plus the assistant replies and tool results they triggered. If only the latest round remains or the retries run out, the error is re-raised.</p>"],
+    ["Tool call / no summary", "<p>The primary call returned tool calls (<code>tool_call</code>) or no <code>&lt;summary&gt;</code> block (<code>empty_summary</code>).</p><div class=\"flow\">" +
+      N("bad", "primary failed") + A + N("hot", "fallback call") + A + N("good", "summary") + "</div><p>The fallback uses a dedicated system prompt, thinking off, no tools, and the conversation as a text transcript. It deliberately breaks the prompt cache: a reliable summary is worth it.</p>"],
+    ["Fallback fails too", "<p>Both attempts produced nothing usable.</p><div class=\"flow\">" +
+      N("bad", "primary failed") + A + N("bad", "fallback failed") + A + N("hot", "vibe.compaction_failed telemetry") + A + N("", "(no summary available)") + "</div><p>The telemetry event carries the <em>primary</em> reason, which is the informative one. The placeholder lets the session continue.</p>"],
+    ["Strict mode", "<p><code>raise_on_compaction_failure = true</code></p><div class=\"flow\">" +
+      N("bad", "primary failed") + A + N("hot", "telemetry") + A + N("bad", "CompactionFailedError(reason)") + "</div><p>No fallback and no placeholder: the error propagates and the loop reports a failed compaction. Reactive compaction is off in this mode too.</p>"]
+  ];
+  var ft = $("#ftabs"), fp = $("#fpanel");
+  function pickF(i) {
+    ft.querySelectorAll("button").forEach(function (b, j) { b.classList.toggle("on", i === j); });
+    fp.innerHTML = fails[i][1];
+    fp.classList.remove("panel"); void fp.offsetWidth; fp.classList.add("panel");
+  }
+  fails.forEach(function (f, i) {
+    var b = document.createElement("button"); b.textContent = f[0];
+    b.addEventListener("click", function () { pickF(i); });
+    ft.appendChild(b);
+  });
+  pickF(0);
+})();
+</script>
+</body>
+</html>
